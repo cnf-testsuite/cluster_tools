@@ -35,7 +35,7 @@ module ClusterTools
   end
 
   def self.ensure_namespace_exists!
-    namespaces = KubectlClient::Get.namespaces()
+    namespaces = KubectlClient::Get.resource("namespaces")
     namespace_array = namespaces["items"].as_a 
 
     Log.debug { "ClusterTools ensure_namespace_exists namespace_array: #{namespace_array}" }
@@ -68,39 +68,24 @@ module ClusterTools
 
     KubectlClient::Delete.file("cluster_tools.yml", namespace: self.namespace!)
     #todo make this work with cluster-tools-host-namespace
-    KubectlClient::Get.resource_wait_for_uninstall("Daemonset", "cluster-tools", namespace: self.namespace!)
+    KubectlClient::Wait.resource_wait_for_uninstall("Daemonset", "cluster-tools", namespace: self.namespace!)
   end
 
   def self.exec(cli : String)
     # todo change to get all pods, schedulable nodes is slow
     pods = KubectlClient::Get.pods_by_nodes(KubectlClient::Get.schedulable_nodes_list)
-    pods = KubectlClient::Get.pods_by_label(pods, "name", "cluster-tools")
+    pods = KubectlClient::Get.pods_by_labels(pods, {"name" => "cluster-tools"})
 
     cluster_tools_pod_name = pods[0].dig?("metadata", "name") if pods[0]?
     Log.info { "cluster_tools_pod_name: #{cluster_tools_pod_name}"}
 
-    cmd = "#{cluster_tools_pod_name} -- #{cli}"
-    KubectlClient.exec(cmd, namespace: self.namespace!)
-  end
-
-
-  def self.exec_by_node_construct_cli(cli : String, node : JSON::Any)
-    pods = KubectlClient::Get.pods_by_nodes([node])
-    # pods = KubectlClient::Get.pods_by_label(pods, "name", "cluster-tools-k8s")
-    pods = KubectlClient::Get.pods_by_label(pods, "name", "cluster-tools")
-
-    cluster_tools_pod_name = pods[0].dig?("metadata", "name") if pods[0]?
-    Log.debug { "cluster_tools_pod_name: #{cluster_tools_pod_name}"}
-
-    full_cli = "#{cluster_tools_pod_name} -- #{cli}"
-    Log.debug { "ClusterTools exec full cli: #{full_cli}" }
-    return full_cli
+    KubectlClient::Utils.exec("#{cluster_tools_pod_name}", cli, namespace: self.namespace!)
   end
 
   def self.exec_by_node(cli : String, nodeName : String)
     Log.info { "exec_by_node: Called with String" }
 
-    nodes = KubectlClient::Get.nodes["items"].as_a
+    nodes = KubectlClient::Get.resource("nodes")["items"].as_a
 
     node : JSON::Any | Nil
     node = nodes.find{ |n| n.dig?("metadata", "name") == nodeName }
@@ -111,29 +96,32 @@ module ClusterTools
       ""
     end
   end
-    
+  
+  private def self.get_cluster_tools_pod_on_node(node : JSON::Any)
+    pods = KubectlClient::Get.pods_by_nodes([node])
+    pods = KubectlClient::Get.pods_by_labels(pods, {"name" => "cluster-tools"})
+
+    cluster_tools_pod_name = pods[0].dig?("metadata", "name") if pods[0]?
+    Log.debug { "cluster_tools_pod_name: #{cluster_tools_pod_name}"}
+
+    cluster_tools_pod_name
+  end
 
   def self.exec_by_node(cli : String, node : JSON::Any)
     Log.info { "exec_by_node: Called with JSON" }
-    # todo change to get all pods, schedulable nodes is slow
-
-    # pods_by_nodes internally use KubectlClient::Get.pods which uses --all-namespaces option.
-    # So they do not have to be passed the namespace to perform operations.
-    full_cli = exec_by_node_construct_cli(cli, node)
-    exec = KubectlClient.exec(full_cli, namespace: self.namespace)
+    # 'pods_by_nodes' fetches pods from all namespaces so they
+    # do not have to be passed the namespace to perform operations.
+    pod_name = get_cluster_tools_pod_on_node(node)
+    exec = KubectlClient::Utils.exec("#{pod_name}", cli, namespace: self.namespace)
     Log.debug { "ClusterTools exec: #{exec}" }
     exec
   end
 
   def self.exec_by_node_bg(cli : String, node : JSON::Any)
-    # todo change to get all pods, schedulable nodes is slow
-
-    # pods_by_nodes internally use KubectlClient::Get.pods which uses --all-namespaces option.
-    # So they do not have to be passed the namespace to perform operations.
-    
-    full_cli = exec_by_node_construct_cli(cli, node)
-    Log.debug { "ClusterTools exec full cli: #{full_cli}" }
-    exec = KubectlClient.exec_bg(full_cli, namespace: self.namespace)
+    # 'pods_by_nodes' fetches pods from all namespaces so they
+    # do not have to be passed the namespace to perform operations.
+    pod_name = get_cluster_tools_pod_on_node(node)
+    exec = KubectlClient::Utils.exec_bg("#{pod_name}", cli, namespace: self.namespace)
     Log.debug { "ClusterTools exec: #{exec}" }
     exec
   end
@@ -168,7 +156,7 @@ module ClusterTools
 		case kind
 		when  "deployment","statefulset","pod","replicaset", "daemonset"
 			resource_yaml = KubectlClient::Get.resource(resource[:kind], resource[:name], resource[:namespace])
-			pods = KubectlClient::Get.pods_by_resource(resource_yaml, resource[:namespace])
+			pods = KubectlClient::Get.pods_by_resource_labels(resource_yaml, resource[:namespace])
 			pid_log_names  = [] of String
 			pod_resp = pods.map do |pod|
 				pod_name = pod.dig("metadata", "name")
@@ -237,8 +225,7 @@ module ClusterTools
 
   def self.wait_for_cluster_tools
     Log.info { "ClusterTools wait_for_cluster_tools" }
-    KubectlClient::Get.resource_wait_for_install("Daemonset", "cluster-tools", namespace: self.namespace!, wait_count: 300)
-    # KubectlClient::Get.resource_wait_for_install("Daemonset", "cluster-tools-k8s", namespace: self.namespace)
+    KubectlClient::Wait.resource_wait_for_install("Daemonset", "cluster-tools", namespace: self.namespace!, wait_count: 300)
   end
 
   # https://windsock.io/explaining-docker-image-ids/
@@ -264,33 +251,56 @@ module ClusterTools
     JSON.parse(%({}))
   end
 
-  def self.local_match_by_image_name(image_names : Array(String), nodes=KubectlClient::Get.nodes["items"].as_a )
+  def self.local_match_by_image_name(image_names : Array(String), nodes=KubectlClient::Get.resource("nodes")["items"].as_a )
     image_names.map{|x| local_match_by_image_name(x, nodes)}.flatten.find{|m|m[:found]==true}
   end
-  def self.local_match_by_image_name(image_name, nodes=KubectlClient::Get.nodes["items"].as_a )
+  def self.local_match_by_image_name(image_name, nodes=KubectlClient::Get.resource("nodes")["items"].as_a )
     Log.info { "local_match_by_image_name image_name: #{image_name}" }
     nodes = KubectlClient::Get.nodes["items"].as_a
     local_match_by_image_name(image_name, nodes)
   end
 
+  # TODO (rafal-lal): add spec for it
   def self.local_match_by_image_name(image_name, nodes : Array(JSON::Any))
     Log.info { "local_match_by_image_name image_name: #{image_name}" }
 
     match = Hash{:found => false, :digest => "", :release_name => ""}
-    #todo get name of pod and match against one pod instead of getting all pods and matching them
-    tag = KubectlClient::Get.container_tag_from_image_by_nodes(image_name, nodes)
+    # Group all imageIDs on passed 'nodes' into array.
+    # If 'image_name' matches the name with tag, save its first occurence.
+    # node.status.images is in following format:
+    #  {
+    #  "names": [
+    #    "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:37d84129932.......",
+    #    "registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.14.0"
+    #  ],
+    #  "sizeBytes": 51212837
+    #  }
+    tag = ""
+    imageIDs = [] of String
+    nodes.each do |node|
+      begin
+        images = node.dig("status", "images").as_a.each do |image|
+          image.dig("names").as_a.each do |name|
+            if name.as_s.includes?("sha256")
+              imageIDs << name.as_s
+            else
+              next unless name.as_s.includes?(image_name)
+              tag = DockerClient.parse_image(name.as_s)["tag"] if tag == ""
+            end
+          end
+        end
+      rescue
+        next
+      end
+    end
 
-    if tag
+    if tag != ""
       Log.info { "container tag: #{tag}" }
-
-      pods = KubectlClient::Get.pods_by_nodes(nodes)
-
-      #todo container_digests_by_pod (use pod from previous image search) --- performance enhancement
-      imageids = KubectlClient::Get.container_digests_by_nodes(nodes)
-      resp = ClusterTools.official_content_digest_by_image_name(image_name + ":" + tag )
+  
+      resp = ClusterTools.official_content_digest_by_image_name(image_name + ":" + tag)
       sha_list = [{"name" => image_name, "manifest_digest" => resp["Digest"].as_s}]
       Log.info { "jaeger_pods sha_list : #{sha_list}"}
-      match = DockerClient::K8s.local_digest_match(sha_list, imageids)
+      match = DockerClient::K8s.local_digest_match(sha_list, imageIDs)
       Log.info { "local_match_by_image_name match : #{match}"}
     else
       Log.info { "local_match_by_image_name tag: #{tag} match : #{match}"}
@@ -299,14 +309,14 @@ module ClusterTools
     Log.info { "local_match_by_image_name match: #{match}" }
     match
   end
-
+  
   def self.pod_name()
-    KubectlClient::Get.pod_status("cluster-tools", namespace: self.namespace!).split(",")[0]
+    KubectlClient::Get.match_pods_by_prefix("cluster-tools", namespace: self.namespace!).first?
   end
 
   def self.pod_by_node(node)
     resource = KubectlClient::Get.resource("Daemonset", "cluster-tools", namespace: self.namespace!)
-    pods = KubectlClient::Get.pods_by_resource(resource, namespace: self.namespace!)
+    pods = KubectlClient::Get.pods_by_resource_labels(resource, namespace: self.namespace!)
     cluster_pod = pods.find do |pod|
       pod.dig("spec", "nodeName") == node
     end
