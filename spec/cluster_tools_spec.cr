@@ -5,8 +5,7 @@ require "../cluster_tools.cr"
 describe "ClusterTools" do
   before_all do
     begin
-      is_namespace_created = KubectlClient::Apply.namespace(ClusterTools.namespace)
-      (is_namespace_created).should be_true
+      KubectlClient::Apply.namespace(ClusterTools.namespace)
       Log.info { "#{ClusterTools.namespace} namespace created" }
     rescue e : KubectlClient::ShellCMD::AlreadyExistsError
       Log.info { "#{ClusterTools.namespace} namespace already exists on the Kubernetes cluster" }
@@ -15,6 +14,7 @@ describe "ClusterTools" do
   after_all do
     ClusterTools.uninstall
   end
+
   describe "pre install" do
     it "ensure_namespace_exists!" do
       (ClusterTools.ensure_namespace_exists!).should be_true
