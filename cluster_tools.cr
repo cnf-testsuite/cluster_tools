@@ -71,7 +71,7 @@ module ClusterTools
     KubectlClient::Wait.resource_wait_for_uninstall("Daemonset", "cluster-tools", namespace: self.namespace!)
   end
 
-  def self.exec(cli : String)
+  def self.exec(cli : String) : KubectlClient::CMDResult
     # todo change to get all pods, schedulable nodes is slow
     pods = KubectlClient::Get.pods_by_nodes(KubectlClient::Get.schedulable_nodes_list)
     pods = KubectlClient::Get.pods_by_labels(pods, {"name" => "cluster-tools"})
@@ -82,19 +82,18 @@ module ClusterTools
     KubectlClient::Utils.exec("#{cluster_tools_pod_name}", cli, namespace: self.namespace!)
   end
 
-  def self.exec_by_node(cli : String, nodeName : String)
+  def self.exec_by_node(cli : String, node_name : String) : KubectlClient::CMDResult?
     Log.info { "exec_by_node: Called with String" }
 
     nodes = KubectlClient::Get.resource("nodes")["items"].as_a
 
     node : JSON::Any | Nil
-    node = nodes.find{ |n| n.dig?("metadata", "name") == nodeName }
+    node = nodes.find{ |n| n.dig?("metadata", "name") == node_name }
 
-    if node
-      self.exec_by_node(cli, node)
-    else
-      ""
-    end
+    return self.exec_by_node(cli, node) if node
+
+    Log.error { "exec_by_node failed, '#{node_name}' not matched to any existing nodes" }
+    nil
   end
   
   private def self.get_cluster_tools_pod_on_node(node : JSON::Any)
@@ -107,7 +106,7 @@ module ClusterTools
     cluster_tools_pod_name
   end
 
-  def self.exec_by_node(cli : String, node : JSON::Any)
+  def self.exec_by_node(cli : String, node : JSON::Any) : KubectlClient::CMDResult
     Log.info { "exec_by_node: Called with JSON" }
     # 'pods_by_nodes' fetches pods from all namespaces so they
     # do not have to be passed the namespace to perform operations.
@@ -117,7 +116,7 @@ module ClusterTools
     exec
   end
 
-  def self.exec_by_node_bg(cli : String, node : JSON::Any)
+  def self.exec_by_node_bg(cli : String, node : JSON::Any) : KubectlClient::BackgroundCMDResult
     # 'pods_by_nodes' fetches pods from all namespaces so they
     # do not have to be passed the namespace to perform operations.
     pod_name = get_cluster_tools_pod_on_node(node)
@@ -140,13 +139,13 @@ module ClusterTools
     Log.info {"node_pid_by_container_id container_id: #{container_id}" }
     short_container_id = parse_container_id(container_id)
     inspect = ClusterTools.exec_by_node("crictl inspect #{short_container_id}", node)
-    Log.debug {"node_pid_by_container_id inspect: #{inspect[:output]}" }
-    if inspect[:status].success?
-      pid = "#{JSON.parse(inspect[:output]).dig?("info", "pid")}"
-    else
+    unless inspect[:status].success?
       Log.error {"container_id not found for: #{container_id}" }
-      pid = nil
+      return nil
     end
+
+    Log.debug {"node_pid_by_container_id inspect: #{inspect[:output]}" }
+    pid = "#{JSON.parse(inspect[:output]).dig?("info", "pid")}"
     Log.info {"node_pid_by_container_id pid: #{pid}" }
     pid 
   end
@@ -199,10 +198,17 @@ module ClusterTools
 						node_name = node.dig("metadata", "name").as_s
 						Log.info { "node name : #{node_name}" }
 						if only_container_pids 
-                                                  pids = KernelIntrospection::K8s::Node.pids_by_container(container_id, node)
-                                                else
-                                                  pids = KernelIntrospection::K8s::Node.pids(node)
-                                                end
+              pids = KernelIntrospection::K8s::Node.pids_by_container(container_id, node)
+            else
+              pids = KernelIntrospection::K8s::Node.pids(node)
+            end
+
+            if pids.empty?
+              Log.info { "pids empty #{pids}" }
+              false
+              next
+            end
+
 						Log.info { "parsed pids: #{pids}" }
 						proc_statuses = KernelIntrospection::K8s::Node.all_statuses_by_pids(pids, node)
 
