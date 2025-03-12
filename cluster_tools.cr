@@ -79,7 +79,7 @@ module ClusterTools
     cluster_tools_pod_name = pods[0].dig?("metadata", "name") if pods[0]?
     Log.info { "cluster_tools_pod_name: #{cluster_tools_pod_name}"}
 
-    KubectlClient::Utils.exec(cluster_tools_pod_name, cli, namespace: self.namespace!)
+    KubectlClient::Utils.exec("#{cluster_tools_pod_name}", cli, namespace: self.namespace!)
   end
 
   def self.exec_by_node(cli : String, node_name : String) : KubectlClient::CMDResult?
@@ -111,7 +111,7 @@ module ClusterTools
     # 'pods_by_nodes' fetches pods from all namespaces so they
     # do not have to be passed the namespace to perform operations.
     pod_name = get_cluster_tools_pod_on_node(node)
-    exec = KubectlClient::Utils.exec(pod_name, cli, namespace: self.namespace)
+    exec = KubectlClient::Utils.exec("#{pod_name}", cli, namespace: self.namespace)
     Log.debug { "ClusterTools exec: #{exec}" }
     exec
   end
@@ -120,7 +120,7 @@ module ClusterTools
     # 'pods_by_nodes' fetches pods from all namespaces so they
     # do not have to be passed the namespace to perform operations.
     pod_name = get_cluster_tools_pod_on_node(node)
-    exec = KubectlClient::Utils.exec_bg(pod_name, cli, namespace: self.namespace)
+    exec = KubectlClient::Utils.exec_bg("#{pod_name}", cli, namespace: self.namespace)
     Log.debug { "ClusterTools exec: #{exec}" }
     exec
   end
